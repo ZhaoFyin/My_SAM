@@ -8,8 +8,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional, Tuple, Type, Any
-from .common import LayerNorm2d, MLPBlock
-
+# from .common import LayerNorm2d, MLPBlock
+from SAM.modeling_CNN.common import LayerNorm2d, MLPBlock
 
 class LoRALinear(nn.Module):
     def __init__(self, base_linear: nn.Linear, r=8, alpha=16, dropout=0.0):
@@ -506,13 +506,22 @@ class ScaleContextAttention(nn.Module):
         self.proj_global = nn.Linear(dim, dim)
 
         # 通道门控
+        # 通道门控
         self.gate_pool = nn.AdaptiveAvgPool2d(1)
+        hidden = max(self.dim // 4, 8)  # 中间维度，随便你调，防止太小
         self.gate_mlp = nn.Sequential(
-            nn.Conv2d(dim * 2, dim // 4, 1, bias=False),
+            nn.Conv2d(self.dim * 2, hidden, 1, bias=False),  # 2C -> hidden
             nn.ReLU(inplace=True),
-            nn.Conv2d(dim // 4, 2, 1, bias=True),  # 输出两个通道：local / global
+            nn.Conv2d(hidden, self.dim * 2, 1, bias=True),  # hidden -> 2C
             nn.Sigmoid()
         )
+        # self.gate_pool = nn.AdaptiveAvgPool2d(1)
+        # self.gate_mlp = nn.Sequential(
+        #     nn.Conv2d(dim * 2, dim // 4, 1, bias=False),
+        #     nn.ReLU(inplace=True),
+        #     nn.Conv2d(dim // 4, 2, 1, bias=True),  # 输出两个通道：local / global
+        #     nn.Sigmoid()
+        # )
 
     def forward(self, x):
 
@@ -573,13 +582,25 @@ class ScaleContextAttention(nn.Module):
         out_global = out_global.transpose(1, 2).view(B, C, H, W)
 
         # ========= 3) 门控融合 =========
-        cat = torch.cat([out_local.permute(0, 3, 1, 2), out_global], dim=1)  # [B,2C,H,W]
-        gate = self.gate_mlp(self.gate_pool(cat))        # [B,2,1,1]
-        w_local = gate[:, 0:1, :, :]
-        w_global = gate[:, 1:2, :, :]
+        # cat = torch.cat([out_local.permute(0, 3, 1, 2), out_global], dim=1)  # [B,2C,H,W]
+        # gate = self.gate_mlp(self.gate_pool(cat))        # [B,2,1,1]
+        # w_local = gate[:, 0:1, :, :]
+        # w_global = gate[:, 1:2, :, :]
+        #
+        # fused = w_local * out_local + w_global * out_global.permute(0, 2, 3, 1)  # [B,C,H,W]
 
-        fused = w_local * out_local + w_global * out_global.permute(0, 2, 3, 1)  # [B,C,H,W]
+        out_local_chw = out_local.permute(0, 3, 1, 2)  # [B, C, H, W]
+        cat = torch.cat([out_local_chw, out_global], dim=1)  # [B, 2C, H, W]
+        gate = self.gate_mlp(self.gate_pool(cat))  # [B, 2C, 1, 1]
 
+        # 按通道一分为二：前 C 个是 local 的权重，后 C 个是 global 的权重
+        w_local, w_global = gate.chunk(2, dim=1)  # 各 [B, C, 1, 1]
+
+        # 通道级融合
+        fused_chw = w_local * out_local_chw + w_global * out_global  # [B, C, H, W]
+
+        # 再转回 BHWC 供后续 Block 使用
+        fused = fused_chw.permute(0, 2, 3, 1)  # [B, H, W, C]
         return fused
 
 
