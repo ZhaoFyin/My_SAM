@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 from SAM.build_sam import sam_model_registry
 
@@ -19,9 +18,8 @@ class ScaSAM(nn.Module):
         for p in self.net.image_encoder.parameters():
             p.requires_grad = False
         for n, p in self.net.image_encoder.named_parameters():
-            if "A" in n or "B" in n:
+            if hasattr(p, "is_lora_param"):
                 p.requires_grad = True
-        for n, p in self.net.image_encoder.named_parameters():
             if "sca" in n:
                 p.requires_grad = True
 
