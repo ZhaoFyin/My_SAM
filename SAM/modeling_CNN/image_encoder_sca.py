@@ -182,13 +182,15 @@ class ImageEncoderViT(nn.Module):
             else:
                 pos_embed = self.pos_embed
             x = x + pos_embed
-
+        sca_feats = []
         for i, blk in enumerate(self.blocks):
-            x = blk(x)
-
+            x, sca_feat = blk(x)
+            if sca_feat is not None:
+                sca_feats.append(sca_feat)
+            sca_feats.append(sca_feat)
         x = self.neck(x.permute(0, 3, 1, 2))
 
-        return x
+        return x, sca_feats
 
 
 class Block(nn.Module):
@@ -249,7 +251,7 @@ class Block(nn.Module):
 
         self.window_size = window_size
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor):
         shortcut = x
         x = self.norm1(x)
         # Window partition
@@ -258,6 +260,7 @@ class Block(nn.Module):
             x, pad_hw = window_partition(x, self.window_size)
 
         x = self.attn(x)
+        sca_feat = None
         # Reverse window partition
         if self.window_size > 0:
             x = window_unpartition(x, self.window_size, pad_hw, (H, W))
@@ -265,9 +268,10 @@ class Block(nn.Module):
         x = shortcut + x
         if self.block_idx in self.sca_layer and self.use_sca:
             x = x + self.sca(self.norm_sca(x))
+            sca_feat = x
         x = x + self.mlp(self.norm2(x))
 
-        return x
+        return x, sca_feat
 
 
 class Attention(nn.Module):
